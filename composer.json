@@ -1,5 +1,5 @@
 {
-    "name": "eventsauce/wordpress-message-repository",
+    "name": "aheissenberger/wordpress-message-repository",
     "type": "library",
     "description": "Wordpress Message Repository for EventSauce",
     "license": "MIT",
