@@ -1,0 +1,8 @@
+{
+    "args": {
+    "VARIANT": "7.4",
+    "INSTALL_NODE": "false",
+    "NODE_VERSION": "10"
+},
+    "image": "mcr.microsoft.com/vscode/devcontainers/php"
+}

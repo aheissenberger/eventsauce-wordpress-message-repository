@@ -1,0 +1,3 @@
+composer.lock
+*.code-workspace
+vendor

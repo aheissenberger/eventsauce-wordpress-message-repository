@@ -1,9 +1,7 @@
 <?php
 
-namespace EventSauce\DoctrineMessageRepository;
+namespace EventSauce\WordpressMessageRepository;
 
-use Doctrine\DBAL\Connection;
-use Doctrine\DBAL\Driver\Statement;
 use EventSauce\EventSourcing\AggregateRootId;
 use EventSauce\EventSourcing\Header;
 use EventSauce\EventSourcing\Message;
@@ -71,9 +69,10 @@ class DoctrineMessageRepository implements MessageRepository
         }
 
         $sql .= implode(', ', $values);
-        $this->connection->beginTransaction();
-        $this->connection->prepare($sql)->execute($params);
-        $this->connection->commit();
+        $this->connection->query( "START TRANSACTION" );
+        $this->connection->insert($this->tableName,$params,['%s','%s','%s','%d','%s','%s']);
+        //$this->connection->prepare($sql)->execute($params);
+        $this->connection->query( "COMMIT" );
     }
 
     protected function baseSql(string $tableName): string
@@ -83,43 +82,40 @@ class DoctrineMessageRepository implements MessageRepository
 
     public function retrieveAll(AggregateRootId $id): Generator
     {
-        $stm = $this->connection->createQueryBuilder()
-            ->select('payload')
-            ->from($this->tableName)
-            ->where('aggregate_root_id = :aggregate_root_id')
-            ->orderBy('aggregate_root_version', 'ASC')
-            ->setParameter('aggregate_root_id', $id->toString())
-            ->execute();
+        $sql =$wpdb->prepare(
+               "SELECT payload FROM {$this->tableName} WHERE aggregate_root_id = %s ORDER BY aggregate_root_version ASC",
+               $id->toString()
+            );
+         $stmt = mysqli_prepare($wpdb->dbh, $sql);
+        mysqli_stmt_execute($stmt);
 
         return $this->yieldMessagesForResult($stm);
     }
 
     public function retrieveEverything(): Generator
     {
-        /** @var Statement $stm */
-        $stm = $this->connection->createQueryBuilder()
-            ->select('payload')
-            ->from($this->tableName)
-            ->orderBy('time_of_recording', 'ASC')
-            ->execute();
 
-        while ($payload = $stm->fetchColumn()) {
+      $stmt = mysqli_prepare($wpdb->dbh, "SELECT payload FROM {$this->tableName} ORDER BY time_of_recording ASC");
+     mysqli_stmt_execute($stmt);
+
+        mysqli_stmt_bind_result($stmt, $payload);
+        while (mysqli_stmt_fetch($stmt)) {
             yield from $this->serializer->unserializePayload(json_decode($payload, true));
         }
+        mysqli_stmt_close($stmt);
     }
 
     public function retrieveAllAfterVersion(AggregateRootId $id, int $aggregateRootVersion): Generator
     {
-        /** @var Statement $stm */
-        $stm = $this->connection->createQueryBuilder()
-            ->select('payload')
-            ->from($this->tableName)
-            ->where('aggregate_root_id = :aggregate_root_id')
-            ->andWhere('aggregate_root_version > :aggregate_root_version')
-            ->orderBy('aggregate_root_version', 'ASC')
-            ->setParameter('aggregate_root_id', $id->toString())
-            ->setParameter('aggregate_root_version', $aggregateRootVersion)
-            ->execute();
+
+        $sql =$wpdb->prepare(
+            "SELECT payload FROM {$this->tableName} WHERE aggregate_root_id = %s AND aggregate_root_version > %d ORDER BY aggregate_root_version ASC",
+            $id->toString(),
+            $aggregateRootVersion
+         );
+                 /** @var Statement $stm */
+      $stmt = mysqli_prepare($wpdb->dbh, $sql);
+     mysqli_stmt_execute($stmt);
 
         return $this->yieldMessagesForResult($stm);
     }
@@ -130,7 +126,8 @@ class DoctrineMessageRepository implements MessageRepository
      */
     private function yieldMessagesForResult(Statement $stm)
     {
-        while ($payload = $stm->fetchColumn()) {
+        mysqli_stmt_bind_result($stmt, $payload);
+        while (mysqli_stmt_fetch($stmt)) {
             $messages = $this->serializer->unserializePayload(json_decode($payload, true));
 
             /* @var Message $message */
@@ -138,6 +135,7 @@ class DoctrineMessageRepository implements MessageRepository
                 yield $message;
             }
         }
+        mysqli_stmt_close($stmt);
 
         return isset($message)
             ? $message->header(Header::AGGREGATE_ROOT_VERSION) ?: 0
