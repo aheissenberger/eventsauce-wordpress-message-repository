@@ -1,3 +1,5 @@
 composer.lock
 *.code-workspace
 vendor
+coverage
+.phpunit.result.cache

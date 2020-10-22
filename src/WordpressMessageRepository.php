@@ -11,11 +11,9 @@ use Generator;
 use function json_decode;
 use Ramsey\Uuid\Uuid;
 
-class DoctrineMessageRepository implements MessageRepository
+class WordpressMessageRepository implements MessageRepository
 {
-    /**
-     * @var Connection
-     */
+
     protected $connection;
 
     /**
@@ -33,15 +31,15 @@ class DoctrineMessageRepository implements MessageRepository
      */
     private $jsonEncodeOptions;
 
-    public function __construct(Connection $connection, MessageSerializer $serializer, string $tableName, int $jsonEncodeOptions = 0)
+    public function __construct($connection, MessageSerializer $serializer, string $tableName, int $jsonEncodeOptions = 0)
     {
-        $this->connection = $connection;
+        $this->connection = $connection->dbh;
         $this->serializer = $serializer;
         $this->tableName = $tableName;
         $this->jsonEncodeOptions = $jsonEncodeOptions;
     }
 
-    public function persist(Message ... $messages)
+    public function persist(Message ...$messages)
     {
         if (count($messages) === 0) {
             return;
@@ -50,29 +48,30 @@ class DoctrineMessageRepository implements MessageRepository
         $sql = $this->baseSql($this->tableName);
         $params = [];
         $values = [];
+        $types = "";
 
         foreach ($messages as $index => $message) {
             $payload = $this->serializer->serializeMessage($message);
-            $eventIdColumn = 'event_id_' . $index;
-            $aggregateRootIdColumn = 'aggregate_root_id_' . $index;
-            $eventTypeColumn = 'event_type_' . $index;
-            $aggregateRootVersionColumn = 'aggregate_root_version_' . $index;
-            $timeOfRecordingColumn = 'time_of_recording_' . $index;
-            $payloadColumn = 'payload_' . $index;
-            $values[] = "(:{$eventIdColumn}, :{$eventTypeColumn}, :{$aggregateRootIdColumn}, :{$aggregateRootVersionColumn}, :{$timeOfRecordingColumn}, :{$payloadColumn})";
-            $params[$aggregateRootVersionColumn] = $payload['headers'][Header::AGGREGATE_ROOT_VERSION] ?? 0;
-            $params[$timeOfRecordingColumn] = $payload['headers'][Header::TIME_OF_RECORDING];
-            $params[$eventIdColumn] = $payload['headers'][Header::EVENT_ID] = $payload['headers'][Header::EVENT_ID] ?? Uuid::uuid4()->toString();
-            $params[$payloadColumn] = json_encode($payload, $this->jsonEncodeOptions);
-            $params[$eventTypeColumn] = $payload['headers'][Header::EVENT_TYPE] ?? null;
-            $params[$aggregateRootIdColumn] = $payload['headers'][Header::AGGREGATE_ROOT_ID] ?? null;
+            $values[] = "(?,?,?,?,?,?)";
+            $types .= "sssiss";
+            // order of values need to match with sql values order
+            $params[] = $payload['headers'][Header::EVENT_ID] = $payload['headers'][Header::EVENT_ID] ?? Uuid::uuid4()->toString();
+            $params[] = $payload['headers'][Header::EVENT_TYPE] ?? null;
+            $params[] = $payload['headers'][Header::AGGREGATE_ROOT_ID] ?? null;
+            $params[] = $payload['headers'][Header::AGGREGATE_ROOT_VERSION] ?? 0;
+            $params[] = $this->removeTimeZone($payload['headers'][Header::TIME_OF_RECORDING]);
+            $params[] = json_encode($payload, $this->jsonEncodeOptions);
         }
 
         $sql .= implode(', ', $values);
-        $this->connection->query( "START TRANSACTION" );
-        $this->connection->insert($this->tableName,$params,['%s','%s','%s','%d','%s','%s']);
-        //$this->connection->prepare($sql)->execute($params);
-        $this->connection->query( "COMMIT" );
+
+        if (!mysqli_begin_transaction($this->connection)) throw new \Error("start transaction failed!");
+        $stm = mysqli_prepare($this->connection, $sql);
+        if ($stm === false) throw new \Error("SQL broken! " . $sql);
+        $res = mysqli_stmt_bind_param($stm, $types, ...$params);
+        if ($res === false) throw new \Error("parameter wrong!");
+        if (!mysqli_stmt_execute($stm)) throw new \Error("sql execution failed!");
+        if (!mysqli_commit($this->connection)) throw new \Error("sql transaction commit failed!");
     }
 
     protected function baseSql(string $tableName): string
@@ -82,12 +81,10 @@ class DoctrineMessageRepository implements MessageRepository
 
     public function retrieveAll(AggregateRootId $id): Generator
     {
-        $sql =$wpdb->prepare(
-               "SELECT payload FROM {$this->tableName} WHERE aggregate_root_id = %s ORDER BY aggregate_root_version ASC",
-               $id->toString()
-            );
-         $stmt = mysqli_prepare($wpdb->dbh, $sql);
-        mysqli_stmt_execute($stmt);
+
+        $aggregate_root_id = mysqli_real_escape_string($this->connection, $id->toString());
+        $stm = mysqli_prepare($this->connection, "SELECT payload FROM {$this->tableName} WHERE aggregate_root_id = \"{$aggregate_root_id}\" ORDER BY aggregate_root_version ASC");
+        mysqli_stmt_execute($stm);
 
         return $this->yieldMessagesForResult($stm);
     }
@@ -95,27 +92,24 @@ class DoctrineMessageRepository implements MessageRepository
     public function retrieveEverything(): Generator
     {
 
-      $stmt = mysqli_prepare($wpdb->dbh, "SELECT payload FROM {$this->tableName} ORDER BY time_of_recording ASC");
-     mysqli_stmt_execute($stmt);
+        $stm = mysqli_prepare($this->connection, "SELECT payload FROM {$this->tableName} ORDER BY time_of_recording ASC");
+        mysqli_stmt_execute($stm);
 
-        mysqli_stmt_bind_result($stmt, $payload);
-        while (mysqli_stmt_fetch($stmt)) {
+        mysqli_stmt_bind_result($stm, $payload);
+        while (mysqli_stmt_fetch($stm)) {
             yield from $this->serializer->unserializePayload(json_decode($payload, true));
         }
-        mysqli_stmt_close($stmt);
+        mysqli_stmt_close($stm);
     }
 
     public function retrieveAllAfterVersion(AggregateRootId $id, int $aggregateRootVersion): Generator
     {
 
-        $sql =$wpdb->prepare(
-            "SELECT payload FROM {$this->tableName} WHERE aggregate_root_id = %s AND aggregate_root_version > %d ORDER BY aggregate_root_version ASC",
-            $id->toString(),
-            $aggregateRootVersion
-         );
-                 /** @var Statement $stm */
-      $stmt = mysqli_prepare($wpdb->dbh, $sql);
-     mysqli_stmt_execute($stmt);
+        $aggregate_root_id_escaped = mysqli_real_escape_string($this->connection, $id->toString());
+        $sql = "SELECT payload FROM {$this->tableName} WHERE aggregate_root_id = \"{$aggregate_root_id_escaped}\" AND aggregate_root_version > {$aggregateRootVersion} ORDER BY aggregate_root_version ASC";
+
+        $stm = mysqli_prepare($this->connection, $sql);
+        mysqli_stmt_execute($stm);
 
         return $this->yieldMessagesForResult($stm);
     }
@@ -124,10 +118,10 @@ class DoctrineMessageRepository implements MessageRepository
      * @param Statement $stm
      * @return Generator|int
      */
-    private function yieldMessagesForResult(Statement $stm)
+    private function yieldMessagesForResult($stm)
     {
-        mysqli_stmt_bind_result($stmt, $payload);
-        while (mysqli_stmt_fetch($stmt)) {
+        mysqli_stmt_bind_result($stm, $payload);
+        while (mysqli_stmt_fetch($stm)) {
             $messages = $this->serializer->unserializePayload(json_decode($payload, true));
 
             /* @var Message $message */
@@ -135,10 +129,15 @@ class DoctrineMessageRepository implements MessageRepository
                 yield $message;
             }
         }
-        mysqli_stmt_close($stmt);
+        mysqli_stmt_close($stm);
 
-        return isset($message)
-            ? $message->header(Header::AGGREGATE_ROOT_VERSION) ?: 0
-            : 0;
+        return (isset($message) ?
+            ($message->header(Header::AGGREGATE_ROOT_VERSION) ?: 0)
+            : 0);
+    }
+
+    private function removeTimeZone($dateTimeString)
+    {
+        return (empty($dateTimeString) ? $dateTimeString : explode("+", $dateTimeString)[0]);
     }
 }

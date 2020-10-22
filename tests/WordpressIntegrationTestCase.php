@@ -1,9 +1,8 @@
 <?php
 
-namespace EventSauce\DoctrineMessageRepository\Tests;
+namespace EventSauce\WordpressMessageRepository\Tests;
 
-use Doctrine\DBAL\Connection;
-use EventSauce\DoctrineMessageRepository\DoctrineMessageRepository;
+use EventSauce\WordpressMessageRepository\WordpressMessageRepository;
 use EventSauce\EventSourcing\DefaultHeadersDecorator;
 use EventSauce\EventSourcing\Header;
 use EventSauce\EventSourcing\Message;
@@ -16,10 +15,10 @@ use PHPUnit\Framework\TestCase;
 use Ramsey\Uuid\Uuid;
 use function iterator_to_array;
 
-abstract class DoctrineIntegrationTestCase extends TestCase
+class WordpressIntegrationTestCase extends TestCase
 {
     /**
-     * @var DoctrineMessageRepository
+     * @var WordpressMessageRepository
      */
     private $repository;
 
@@ -33,19 +32,25 @@ abstract class DoctrineIntegrationTestCase extends TestCase
      */
     private $clock;
 
-    abstract protected function connection(): Connection;
+    protected function connection()
+    {
+        return (require __DIR__ . '/wpdb-connection.php');
+    }
 
-    abstract protected function messageRepository(
-        Connection $connection,
+    protected function messageRepository(
+        $connection,
         MessageSerializer $serializer,
         string $tableName
-    ): DoctrineMessageRepository;
+    ): WordpressMessageRepository {
+        return new WordpressMessageRepository($connection, $serializer, $tableName);
+    }
 
     protected function setUp(): void
     {
         parent::setUp();
         $connection = $this->connection();
-        $connection->exec('TRUNCATE TABLE domain_messages');
+        $stmt = mysqli_prepare($connection->dbh, 'TRUNCATE TABLE domain_messages');
+        mysqli_stmt_execute($stmt);
         $serializer = new ConstructingMessageSerializer();
         $this->clock = new TestClock();
         $this->decorator = new DefaultHeadersDecorator(null, $this->clock);

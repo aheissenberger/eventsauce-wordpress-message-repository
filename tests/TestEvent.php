@@ -1,6 +1,6 @@
 <?php
 
-namespace EventSauce\DoctrineMessageRepository\Tests;
+namespace EventSauce\WordpressMessageRepository\Tests;
 
 use EventSauce\EventSourcing\Serialization\SerializablePayload;
 
